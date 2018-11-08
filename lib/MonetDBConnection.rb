@@ -25,7 +25,7 @@ require 'MonetDBExceptions'
 require 'uri' # parse merovingian redirects
 
 Q_TABLE = "1" # SELECT operation
-Q_UPDATE = "2" # INSERT/UPDATE operations
+Q_UPDATE = "2" # INSERT/UPDATE/DELETE operations
 Q_CREATE = "3" # CREATE/DROP TABLE operations
 Q_TRANSACTION = "4" # TRANSACTION
 Q_PREPARE = "5"
@@ -82,8 +82,8 @@ class MonetDBConnection
   # * port: server port (default is 50000)
 
   def initialize(user = "monetdb", passwd = "monetdb", lang = "sql", host="127.0.0.1", port = "50000")
-    @user = user
-    @passwd = passwd
+    @user = (user.nil? || user.empty?) ? 'monetdb' : user
+    @passwd = (passwd.nil? || passwd.empty?) ? 'monetdb' : passwd
     @lang = lang.downcase
     @host = host
     @port = port

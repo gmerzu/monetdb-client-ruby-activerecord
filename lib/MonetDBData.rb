@@ -58,7 +58,7 @@ class MonetDBData
 
     if (@lang == LANG_SQL)
       # the fired query is a SELECT; store and return the whole record set
-      if @action == Q_TABLE
+      if @action == Q_TABLE || @action == Q_PREPARE
         @header = parse_header_table(@header)
         @header.freeze
 
@@ -165,7 +165,7 @@ class MonetDBData
 
   # Cursor method that retrieves all the records present in a table and stores them in a cache.
   def fetch_all()
-    if @query['type'] == Q_TABLE
+    if @query['type'] == Q_TABLE || @query['type'] == Q_PREPARE
       rows = Array.new
       @record_set.each do |row|
         rows << parse_tuple(row)
@@ -198,6 +198,10 @@ class MonetDBData
     return @header['columns_type']
   end
 
+  def header
+    return @query
+  end
+
   private
 
   # store block of data, parse it and store it.
@@ -224,6 +228,11 @@ class MonetDBData
           result = row.split(' ')
           @affected_rows = result[1].to_i
           @last_insert_id = result[2].to_i
+        elsif row[1].chr == Q_PREPARE
+          @action = Q_PREPARE
+          @query = parse_header_query(row)
+          @query.freeze
+          @row_count = @query['rows'].to_i #total number of rows in table
         end
       elsif row[0].chr == MSG_INFO
         raise MonetDBQueryError, row
@@ -286,7 +295,7 @@ class MonetDBData
   # Parses a query header and returns information about the query.
   def parse_header_query(row)
     type = row[1].chr
-    if type == Q_TABLE
+    if type == Q_TABLE || type == Q_PREPARE
       # Performing a SELECT: store informations about the table size, query id, total number of records and returned.
       id = row.split(' ')[1]
       rows = row.split(' ')[2]
@@ -312,7 +321,7 @@ class MonetDBData
 
   # Parses a Q_TABLE header and returns information about the schema.
   def parse_header_table(header_t)
-    if @query["type"] == Q_TABLE
+    if @query["type"] == Q_TABLE || @query["type"] == Q_PREPARE
       if header_t != nil
         name_t = header_t[0].split(' ')[1].gsub(/,$/, '')
         name_cols = Array.new

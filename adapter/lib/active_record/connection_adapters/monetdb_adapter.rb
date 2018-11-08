@@ -97,11 +97,16 @@ module ActiveRecord
     end #end of MonetDBColumn class
 
     class TableDefinition
+      def native_database_types
+        MonetDBAdapter::NATIVE_DATABASE_TYPES
+      end
+
       # Override so that we handle the fact that MonetDB 
       # doesn't support "limit" on integer column.
       # Otherwise same implementation
       def column(name, type, options = {})
-        column = self[name] || ColumnDefinition.new(@base, name, type)
+        native = native_database_types
+        column = @columns_hash[name.to_sym] || ColumnDefinition.new(name, type, options)
 
         if type.to_sym != :integer and type.to_sym != :primary_key
           column.limit = options[:limit] || native[type.to_sym][:limit] if options[:limit] or native[type.to_sym]
@@ -112,20 +117,31 @@ module ActiveRecord
         column.default = options[:default]
         column.null = options[:null]
 
-        @columns << column unless @columns.include? column
+        @columns_hash[name.to_sym] = column unless @columns_hash[name.to_sym]
         self
       end
 
     end
 
     class MonetDBAdapter < AbstractAdapter
-      class BindSubstitution < Arel::Visitors::MySQL
-        include Arel::Visitors::BindVisitor
-      end
+      NATIVE_DATABASE_TYPES = {
+        :primary_key => "int NOT NULL auto_increment PRIMARY KEY",
+        :string => {:name => "varchar", :limit => 255},
+        :text => {:name => "clob"},
+        :integer => {:name => "int"},
+        :float => {:name => "float"},
+        :decimal => {:name => "decimal"},
+        :datetime => {:name => "timestamp"},
+        :timestamp => {:name => "timestamp"},
+        :time => {:name => "time"},
+        :date => {:name => "date"},
+        :binary => {:name => "blob"},
+        :boolean => {:name => "boolean"},
+        :bigint => {:name => "bigint"}
+      }
 
       def initialize(connection, logger, connection_options, config)
         super(connection, logger)
-        @visitor = BindSubstitution.new self
         @connection_options, @config = connection_options, config
         connect
       end
@@ -154,21 +170,7 @@ module ActiveRecord
       end
 
       def native_database_types
-        {
-            :primary_key => "int NOT NULL auto_increment PRIMARY KEY",
-            :string => {:name => "varchar", :limit => 255},
-            :text => {:name => "clob"},
-            :integer => {:name => "int"},
-            :float => {:name => "float"},
-            :decimal => {:name => "decimal"},
-            :datetime => {:name => "timestamp"},
-            :timestamp => {:name => "timestamp"},
-            :time => {:name => "time"},
-            :date => {:name => "date"},
-            :binary => {:name => "blob"},
-            :boolean => {:name => "boolean"},
-            :bigint => {:name => "bigint"}
-        }
+        NATIVE_DATABASE_TYPES
       end
 
       #MonetDB does not support using DISTINCT withing COUNT
@@ -261,7 +263,7 @@ module ActiveRecord
         if [:integer, :double, :date, :bigint].include? type
           type.to_s
         else
-          super
+          super(type)
         end
       end
 
@@ -277,7 +279,6 @@ module ActiveRecord
         return [] unless num_rows >= 1
 
         result = []
-
 
         while row = hdl.fetch_hash do
           col_name = row['name']
@@ -300,6 +301,11 @@ module ActiveRecord
           type_digits = row['type_digits']
           type_scale = row['type_scale']
 
+          cast_type = lookup_cast_type(col_type)
+          cast_type_type = cast_type.type
+          cast_type_limit = nil
+          cast_type_scale = nil
+          cast_type_precision = nil
 
           # Don't care about datatypes that aren't supported by
           # ActiveRecord, like interval. 
@@ -307,23 +313,26 @@ module ActiveRecord
           # like integer, double, date, bigint
           if (col_type == "clob" || col_type == "blob")
             if (type_digits.to_i > 0)
-              col_type << "(#{type_digits})"
+              cast_type_limit = type_digits.to_i
             end
           elsif (col_type == "char" ||
-              col_type == "varchar" ||
-              col_type == "time" ||
-              col_type == "timestamp"
-          )
-            col_type << "(#{type_digits})"
+                 col_type == "varchar" ||
+                 col_type == "time" ||
+                 col_type == "timestamp"
+                )
+            cast_type_limit = type_digits.to_i
           elsif (col_type == "decimal")
             if (type_scale.to_i == 0)
-              col_type << "(#{type_digits})"
+              cast_type_limit = type_digits.to_i
             else
-              col_type << "(#{type_digits},#{type_scale})"
+              cast_type_limit = type_digits.to_i
+              cast_type_scale = type_scale.to_i
             end
           end
 
           # instantiate a new column and insert into the result array
+          col_type = SqlTypeMetadata.new(sql_type: col_type, type: cast_type_type,
+                                           limit: cast_type_limit, precision: cast_type_precision, scale: cast_type_scale)
           result << MonetDBColumn.new(col_name, col_default, col_type, col_nullable)
 
         end
@@ -357,6 +366,31 @@ module ActiveRecord
   			WHERE s.name = '#{cur_schema}' 
   				AND t.schema_id = s.id 
   				AND t.system = false", name)
+      end
+
+      def data_source_sql(name = nil, type: nil)
+        scope = quoted_scope(name, type: type)
+        scope[:type] ||= "0,1"
+        sql = "SELECT t.name FROM #{MDB_SYS_SCHEMA}_tables t".dup
+        sql << " WHERE 1 = 1"
+        sql << " AND t.name = #{scope[:name]}" if scope[:name]
+        sql << " AND t.type in (#{scope[:type]})" if scope[:type]
+        sql << " AND t.system = false"
+        sql
+      end
+
+      def quoted_scope(name = nil, type: nil)
+        type = \
+          case type
+        when "BASE TABLE"
+          0
+        when "VIEW"
+          1
+        end
+        scope = {}
+        scope[:name] = quote(name) if name
+        scope[:type] = type if type
+        scope
       end
 
       # Returns an array of indexes for the given table.
@@ -394,7 +428,7 @@ module ActiveRecord
           s = column.class.string_to_binary(value).unpack("H*")[0]
           "BLOB '#{s}'"
         else
-          super
+          super(value)
         end
       end
 
@@ -423,9 +457,17 @@ module ActiveRecord
 
       # Returns an array of arrays containing the field values.
       # Order of columns in tuple arrays is not guaranteed.
-      def select_rows(sql, name = nil)
-        result = select(sql, name)
-        result.map { |v| v.values }
+      def select_rows(sql, name = nil, binds = [])
+        result = select(sql, name, binds)
+        # result.map { |v| v.values }
+        case @last_method
+        when :insert
+          result
+        when :delete
+          result
+        else
+          result.map { |v| v.values }
+        end
       end
 
       def execute(sql, name = nil)
@@ -434,17 +476,45 @@ module ActiveRecord
         @connection.query(sql)
       end
 
-      def exec_query(sql, name = nil, binds = [])
-        select_rows(sql, name)
+      def exec_query(sql, name = nil, binds = [], prepare: false)
+        binds = binds.map do |b|
+          b = id_value_for_database(b) if b.is_a?(Base)
+          if b.respond_to?(:value_for_database)
+            b = b.value_for_database
+          end
+          case b
+          when Date, Time
+            "timestamp #{quote(b)}"
+          else
+            quote(b)
+          end
+        end
+
+        @last_method = if sql =~ /INSERT INTO "(.*)" \(/
+                         :insert
+                       elsif sql =~ /DELETE FROM "(.*)"/
+                         :delete
+                       else
+                         :other
+                       end
+
+        sql = "PREPARE #{sql}"
+        hdl = execute(sql, name)
+        query_id = hdl.header['id'].to_i
+        sql = "EXEC #{query_id}(#{binds.join(', ')})"
+
+        select(sql, name, binds)
       end
 
       def last_inserted_id(result)
-        result.last_insert_id
+        # result.last_insert_id
+        result[:last_insert_id]
       end
 
       def delete(arel, name = nil, binds = [])
         res = super(arel, name, binds)
-        res.affected_rows
+        # res.affected_rows
+        res[:affected_rows]
       end
 
       # Begins the transaction.
@@ -501,7 +571,16 @@ module ActiveRecord
       # column values as values.
       def select(sql, name = nil, binds = [])
         hdl = execute(sql, name)
-        hdl.result_hashes
+        col_names = hdl.name_fields rescue []
+        # ActiveRecord::Result.new(col_names, hdl.result_hashes.collect(&:values))
+        case @last_method
+        when :insert
+          { last_insert_id: hdl.last_insert_id }
+        when :delete
+          { affected_rows: hdl.affected_rows }
+        else
+          ActiveRecord::Result.new(col_names, hdl.result_hashes.collect(&:values))
+        end
       end
 
       # Executes the update statement and returns the number of rows affected.
