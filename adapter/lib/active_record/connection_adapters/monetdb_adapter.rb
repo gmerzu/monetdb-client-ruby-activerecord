@@ -27,6 +27,7 @@ MDB_SYS_SCHEMA = "sys."
 MDB_NON_SYSTEM_TABLES_ONLY = "and system = false"
 
 require 'active_record/connection_adapters/abstract_adapter'
+require 'arel/visitors/bind_visitor'
 require 'MonetDB'
 
 module ActiveRecord
@@ -54,7 +55,6 @@ module ActiveRecord
       ConnectionAdapters::MonetDBAdapter.new(dbh, logger, [host, port, username, password, database, lang], config)
     end
   end
-
 
   module ConnectionAdapters
     class MonetDBColumn < Column
@@ -425,7 +425,13 @@ module ActiveRecord
       # Order of columns in tuple arrays is not guaranteed.
       def select_rows(sql, name = nil, binds = [])
         result = select(sql, name, binds)
-        result.map { |v| v.values }
+        if sql =~ /INSERT INTO "(.*)" \(/
+          result
+        elsif sql =~ /DELETE FROM "(.*)"/
+          result
+        else
+          result.map { |v| v.values }
+        end
       end
 
       def execute(sql, name = nil)
@@ -439,12 +445,14 @@ module ActiveRecord
       end
 
       def last_inserted_id(result)
-        result.last_insert_id
+        # result.last_insert_id
+        result[:last_insert_id]
       end
 
       def delete(arel, name = nil, binds = [])
         res = super(arel, name, binds)
-        res.affected_rows
+        # res.affected_rows
+        res[:affected_rows]
       end
 
       # Begins the transaction.
@@ -502,7 +510,13 @@ module ActiveRecord
       def select(sql, name = nil, binds = [])
         hdl = execute(sql, name)
         col_names = hdl.name_fields rescue []
-        ActiveRecord::Result.new(col_names, hdl.result_hashes.collect(&:values))
+        if sql =~ /INSERT INTO "(.*)" \(/
+          { last_insert_id: hdl.last_insert_id }
+        elsif sql =~ /DELETE FROM "(.*)"/
+          { affected_rows: hdl.affected_rows }
+        else
+          ActiveRecord::Result.new(col_names, hdl.result_hashes.collect(&:values))
+        end
       end
 
       # Executes the update statement and returns the number of rows affected.
@@ -521,6 +535,10 @@ module ActiveRecord
         # make_sure_pk_works(table_name,name)
         hdl = execute(sql, name)
         hdl.last_insert_id
+      end
+
+      def quote_table_name_for_assignment(table, attr)
+        quote_column_name(attr)
       end
 
       protected

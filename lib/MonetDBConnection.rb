@@ -25,7 +25,7 @@ require 'MonetDBExceptions'
 require 'uri' # parse merovingian redirects
 
 Q_TABLE = "1" # SELECT operation
-Q_UPDATE = "2" # INSERT/UPDATE operations
+Q_UPDATE = "2" # INSERT/UPDATE/DELETE operations
 Q_CREATE = "3" # CREATE/DROP TABLE operations
 Q_TRANSACTION = "4" # TRANSACTION
 Q_PREPARE = "5"
