@@ -477,32 +477,6 @@ module ActiveRecord
       end
 
       def exec_query(sql, name = nil, binds = [], prepare: false)
-        binds = binds.map do |b|
-          b = id_value_for_database(b) if b.is_a?(Base)
-          if b.respond_to?(:value_for_database)
-            b = b.value_for_database
-          end
-          case b
-          when Date, Time
-            "timestamp #{quote(b)}"
-          else
-            quote(b)
-          end
-        end
-
-        @last_method = if sql =~ /INSERT INTO "(.*)" \(/
-                         :insert
-                       elsif sql =~ /DELETE FROM "(.*)"/
-                         :delete
-                       else
-                         :other
-                       end
-
-        sql = "PREPARE #{sql}"
-        hdl = execute(sql, name)
-        query_id = hdl.header['id'].to_i
-        sql = "EXEC #{query_id}(#{binds.join(', ')})"
-
         select(sql, name, binds)
       end
 
@@ -570,6 +544,32 @@ module ActiveRecord
       # Returns an array of record hashes with the column names as keys and
       # column values as values.
       def select(sql, name = nil, binds = [])
+        binds = binds.map do |b|
+          b = id_value_for_database(b) if b.is_a?(Base)
+          if b.respond_to?(:value_for_database)
+            b = b.value_for_database
+          end
+          case b
+          when Date, Time
+            "timestamp #{quote(b)}"
+          else
+            quote(b)
+          end
+        end
+
+        @last_method = if sql =~ /INSERT INTO "(.*)" \(/
+                         :insert
+                       elsif sql =~ /DELETE FROM "(.*)"/
+                         :delete
+                       else
+                         :other
+                       end
+
+        sql = "PREPARE #{sql}"
+        hdl = execute(sql, name)
+        query_id = hdl.header['id'].to_i
+        sql = "EXEC #{query_id}(#{binds.join(', ')})"
+
         hdl = execute(sql, name)
         col_names = hdl.name_fields rescue []
         # ActiveRecord::Result.new(col_names, hdl.result_hashes.collect(&:values))
